@@ -40,9 +40,9 @@ Using Gradle is the easiest way to automate Couchbase Lite builds in your projec
 
 ##### Optional: Maven repo URL: `http://files.couchbase.com/maven2/`
 
-NOTE: From 1.1.0 releae, Couchbase Lite Android is also hosted on JCenter which is default maven repository for Android Studio.
+NOTE: From 1.1.0 releae, Couchbase Lite Android is also hosted on **JCenter** which is default maven repository for Android Studio.
 
-In the project level `build.gradle` file, specify maven repo URL.
+Optional: In the project level `build.gradle` file, specify maven repo URL.
 ```
 repositories {
     jcenter()
@@ -72,12 +72,12 @@ In the application level `build.gradle` file, add following in `dependencies` se
 compile 'com.couchbase.lite:couchbase-lite-android:{latest-version}'
 ```
 
-In case of using couchbase lite 1.2.1
+In case of using couchbase lite 1.3.1
 ```
 dependencies {
     compile fileTree(dir: 'libs', include: ['*.jar'])
     compile 'com.android.support:appcompat-v7:21.0.3'
-    compile 'com.couchbase.lite:couchbase-lite-android:1.2.1'
+    compile 'com.couchbase.lite:couchbase-lite-android:1.3.1'
 }
 ```
 
@@ -203,7 +203,6 @@ If you want to run something (aside from the tests), you should get one of the s
 
 ## Limitations
 
-- ~~Docs are limited to 2MB - see [issue 357](https://github.com/couchbase/couchbase-lite-android/issues/357)~~
 - Attachments are limited to 20MB if using Sync Gateway
 
 ## Getting Help

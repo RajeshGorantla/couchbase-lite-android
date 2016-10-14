@@ -14,22 +14,20 @@
 package com.couchbase.lite.multithreads;
 
 import com.couchbase.lite.CouchbaseLiteException;
+import com.couchbase.lite.CouchbaseLiteRuntimeException;
 import com.couchbase.lite.Database;
 import com.couchbase.lite.Document;
 import com.couchbase.lite.Emitter;
 import com.couchbase.lite.LiteTestCaseWithDB;
 import com.couchbase.lite.Mapper;
 import com.couchbase.lite.Query;
+import com.couchbase.lite.QueryEnumerator;
 import com.couchbase.lite.QueryRow;
-import com.couchbase.lite.Revision;
 import com.couchbase.lite.View;
 import com.couchbase.lite.internal.RevisionInternal;
-import com.couchbase.lite.replicator.Replication;
 import com.couchbase.lite.util.Log;
 
-import java.net.URL;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -55,9 +53,8 @@ public class MultiThreadsTest extends LiteTestCaseWithDB {
 
     public void testInsertAndQueryThreads() {
 
-        if (!multithreadsTestsEnabled()) {
+        if (!multithreadsTestsEnabled())
             return;
-        }
 
         // create view
         final View view = createView(database);
@@ -131,6 +128,9 @@ public class MultiThreadsTest extends LiteTestCaseWithDB {
         return view;
     }
 
+    /**
+     * https://github.com/couchbase/couchbase-lite-java-core/issues/1437
+     */
     public void testUpdateDocsAndReadRevHistory() throws Exception {
         if (!multithreadsTestsEnabled())
             return;
@@ -164,7 +164,7 @@ public class MultiThreadsTest extends LiteTestCaseWithDB {
         Thread readThread = new Thread(new Runnable() {
             @Override
             public void run() {
-                for(int j = 0; j < 20; j++) {
+                for (int j = 0; j < 20; j++) {
                     for (int i = 0; i < 100; i++) {
                         String docID = String.format(Locale.ENGLISH, "docID-%08d", i);
                         Document doc = database.getDocument(docID);
@@ -219,6 +219,218 @@ public class MultiThreadsTest extends LiteTestCaseWithDB {
             updateThread.join();
         } catch (InterruptedException e) {
             Log.e(TAG, "Error in updateThread. ", e);
+        }
+    }
+
+    /**
+     * parallel view/query without prefix
+     */
+    public void testParallelViewQueries() throws CouchbaseLiteException {
+        _testParallelViewQueries("");
+    }
+
+    /**
+     * parallel view/query with prefix
+     */
+    public void testParallelViewQueriesWithPrefix() throws CouchbaseLiteException {
+        _testParallelViewQueries("prefix/");
+    }
+
+    /**
+     * ported from .NET - TestParallelViewQueries()
+     * https://github.com/couchbase/couchbase-lite-net/blob/master/src/Couchbase.Lite.Tests.Shared/ViewsTest.cs#L399
+     */
+    private void _testParallelViewQueries(String prefix) throws CouchbaseLiteException {
+        if (!multithreadsTestsEnabled())
+            return;
+
+        int[] data = new int[]{42, 184, 256, Integer.MAX_VALUE, 412};
+
+        final String viewName = prefix + "vu";
+        View vu = database.getView(viewName);
+        vu.setMap(new Mapper() {
+            @Override
+            public void map(Map<String, Object> document, Emitter emitter) {
+                Map<String, Object> key = new HashMap<String, Object>();
+                key.put("sequence", document.get("sequence"));
+                emitter.emit(key, null);
+            }
+        }, "1.0");
+
+
+        final String viewNameFake = prefix + "vuFake";
+        View vuFake = database.getView(viewNameFake);
+        vuFake.setMap(new Mapper() {
+            @Override
+            public void map(Map<String, Object> document, Emitter emitter) {
+                Map<String, Object> key = new HashMap<String, Object>();
+                key.put("sequence", "FAKE");
+                emitter.emit(key, null);
+            }
+        }, "1.0");
+
+        createDocuments(database, 500);
+
+
+        int expectCount = 1;
+        parallelQuery(data, expectCount, viewName, viewNameFake);
+
+        createDocuments(database, 500);
+
+        expectCount = 2;
+        parallelQuery(data, expectCount, viewName, viewNameFake);
+
+        vu.delete();
+
+        vu = database.getView(viewName);
+        vu.setMap(new Mapper() {
+            @Override
+            public void map(Map<String, Object> document, Emitter emitter) {
+                Map<String, Object> key = new HashMap<String, Object>();
+                key.put("sequence", document.get("sequence"));
+                emitter.emit(key, null);
+            }
+        }, "1.0");
+
+
+        expectCount = 2;
+        parallelQuery(data, expectCount, viewName, viewNameFake);
+
+        vuFake.delete();
+
+        vuFake = database.getView(viewNameFake);
+        vuFake.setMap(new Mapper() {
+            @Override
+            public void map(Map<String, Object> document, Emitter emitter) {
+                Map<String, Object> key = new HashMap<String, Object>();
+                key.put("sequence", "FAKE");
+                emitter.emit(key, null);
+            }
+        }, "1.0");
+
+        expectCount = 2;
+        parallelQuery(data, expectCount, viewName, viewNameFake);
+    }
+
+    private void parallelQuery(int[] numbers, final int expectCount, final String viewName1, final String viewName2) {
+        Thread[] threads = new Thread[numbers.length];
+        for (int i = 0; i < numbers.length; i++) {
+            final int num = numbers[i];
+            threads[i] = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (num == Integer.MAX_VALUE)
+                            queryAction2(expectCount, viewName2);
+                        else
+                            queryAction(num, expectCount, viewName1);
+                    } catch (CouchbaseLiteException e) {
+                        e.printStackTrace();
+                        fail(e.getMessage());
+                    }
+                }
+            });
+        }
+        for (int i = 0; i < numbers.length; i++) {
+            threads[i].start();
+        }
+        for (int i = 0; i < numbers.length; i++) {
+            try {
+                threads[i].join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private void queryAction(int x, int expectCount, String viewName) throws CouchbaseLiteException {
+        Database db = manager.getDatabase(database.getName());
+        View gotVu = db.getView(viewName);
+        Query query = gotVu.createQuery();
+        List<Object> keys = new ArrayList<Object>();
+        Map<String, Object> key = new HashMap<String, Object>();
+        key.put("sequence", x);
+        keys.add(key);
+        query.setKeys(keys);
+        QueryEnumerator rows = query.run();
+        assertEquals(expectCount * 500, gotVu.getLastSequenceIndexed());
+        assertEquals(expectCount, rows.getCount());
+    }
+
+    private void queryAction2(int expectCount, String viewName) throws CouchbaseLiteException {
+        Database db = manager.getDatabase(database.getName());
+        View gotVu = db.getView(viewName);
+        Query query = gotVu.createQuery();
+        List<Object> keys = new ArrayList<Object>();
+        Map<String, Object> key = new HashMap<String, Object>();
+        key.put("sequence", "FAKE");
+        keys.add(key);
+        query.setKeys(keys);
+        QueryEnumerator rows = query.run();
+        assertEquals(expectCount * 500, gotVu.getLastSequenceIndexed());
+        assertEquals(expectCount * 500, rows.getCount());
+    }
+
+    public void testCloseDBDuringInsertions() throws CouchbaseLiteException {
+        if (!multithreadsTestsEnabled())
+            return;
+
+        final Database db = manager.getDatabase("multi-thread-close-db");
+
+        final CountDownLatch latch = new CountDownLatch(50);
+
+        Thread insertThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                for (int i = 0; i < 100; i++) {
+                    store(i);
+                    latch.countDown();
+                }
+            }
+        });
+
+        Thread closeThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    assertTrue(latch.await(30, TimeUnit.SECONDS));
+                } catch (InterruptedException e) {
+                    fail(e.toString());
+                }
+                db.close();
+            }
+        });
+
+        closeThread.start();
+        insertThread.start();
+
+        try {
+            closeThread.join();
+        } catch (InterruptedException e) {
+            Log.e(TAG, "Error in closeThread. ", e);
+        }
+        try {
+            insertThread.join();
+        } catch (InterruptedException e) {
+            Log.e(TAG, "Error in insertThread. ", e);
+        }
+
+        db.delete();
+    }
+
+    private void store(int i) {
+        try {
+            Database db = manager.getDatabase("multi-thread-close-db");
+            String id = String.format(Locale.ENGLISH, "ID_%05d", i);
+            Document doc = db.getDocument(id);
+            Map<String, Object> props = new HashMap<String, Object>();
+            props.put("value", i);
+            doc.putProperties(props);
+        } catch (CouchbaseLiteRuntimeException re) {
+            Log.e(TAG, "Error in store(): %s", re.getMessage());
+        } catch (CouchbaseLiteException e) {
+            Log.e(TAG, "Error in store()", e);
+            fail("Error in store()");
         }
     }
 }
